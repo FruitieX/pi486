@@ -1,74 +1,168 @@
-import { useState, useRef, useEffect } from "react"
-import { SerialConnection } from "./lib/serial"
-import { Button } from "./components/ui/button"
-import { Input } from "./components/ui/input"
-import { Label } from "./components/ui/label"
-import { Select } from "./components/ui/select"
-import { Card, CardHeader, CardTitle, CardContent } from "./components/ui/card"
-import { Usb, Disc, HardDrive, BookOpen, Trash2, CircleDot } from "lucide-react"
+import { useState, useRef, useEffect } from 'react';
+import { SerialConnection } from './lib/serial';
+import { Button } from './components/ui/button';
+import { Input } from './components/ui/input';
+import { Label } from './components/ui/label';
+import { Select } from './components/ui/select';
+import { Card, CardHeader, CardTitle, CardContent } from './components/ui/card';
+import {
+  Usb,
+  Disc,
+  HardDrive,
+  BookOpen,
+  Trash2,
+  CircleDot,
+  XCircle,
+} from 'lucide-react';
 
 function App() {
-  const serialRef = useRef(new SerialConnection())
-  const logEndRef = useRef<HTMLDivElement>(null)
+  const serialRef = useRef(new SerialConnection());
+  const logEndRef = useRef<HTMLDivElement>(null);
 
-  const [connected, setConnected] = useState(false)
-  const [log, setLog] = useState<string[]>([])
-  const [busy, setBusy] = useState(false)
-
+  const [connected, setConnected] = useState(false);
+  const [log, setLog] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const cancelRef = useRef<(() => void) | null>(null);
   // Write form state
-  const [mediaType, setMediaType] = useState<"F" | "C">("F")
-  const [writeProtect, setWriteProtect] = useState(false)
-  const [imagePath, setImagePath] = useState("")
+  const [mediaType, setMediaType] = useState<'F' | 'C'>('F');
+  const [writeProtect, setWriteProtect] = useState(false);
+  const [imagePath, setImagePath] = useState('');
 
   const addLog = (entry: string) => {
-    setLog((prev) => [...prev.slice(-200), entry])
-  }
+    setLog((prev) => [...prev.slice(-200), entry]);
+  };
 
   useEffect(() => {
     const unsubscribe = serialRef.current.onLine((line) => {
-      addLog(`← ${line}`)
-    })
-    return unsubscribe
-  }, [])
+      addLog(`← ${line}`);
+    });
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [log])
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [log]);
 
   const handleConnect = async () => {
     try {
       if (connected) {
-        await serialRef.current.disconnect()
-        setConnected(false)
-        addLog("Disconnected")
+        if (busy) {
+          try {
+            await serialRef.current.sendCommand('cancel');
+          } catch {
+            /* ignore if send fails */
+          }
+          cancelRef.current?.();
+          setBusy(false);
+        }
+        await serialRef.current.disconnect();
+        setConnected(false);
+        addLog('Disconnected');
       } else {
-        await serialRef.current.connect()
-        setConnected(true)
-        addLog("Connected")
+        await serialRef.current.connect();
+        setConnected(true);
+        addLog('Connected');
       }
     } catch (err) {
-      addLog(`Error: ${err instanceof Error ? err.message : String(err)}`)
+      addLog(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }
+  };
 
-  const sendCommand = async (cmd: string) => {
-    setBusy(true)
+  /** Send a command and wait until a response line matches the predicate. */
+  const sendCommandAndWait = (
+    cmd: string,
+    predicate: (line: string) => boolean,
+  ): Promise<string> => {
+    return new Promise<string>((resolve, reject) => {
+      const cleanup = () => {
+        unsubscribe();
+        cancelRef.current = null;
+      };
+
+      const unsubscribe = serialRef.current.onLine((line) => {
+        if (predicate(line)) {
+          cleanup();
+          resolve(line);
+        }
+      });
+
+      cancelRef.current = () => {
+        cleanup();
+        reject(new Error('cancelled'));
+      };
+
+      setBusy(true);
+      addLog(`→ ${cmd}`);
+      serialRef.current.sendCommand(cmd).catch((err) => {
+        cleanup();
+        reject(err);
+      });
+    });
+  };
+
+  const handleCancel = async () => {
+    addLog('→ cancel');
     try {
-      addLog(`→ ${cmd}`)
-      await serialRef.current.sendCommand(cmd)
-    } catch (err) {
-      addLog(`Error: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setBusy(false)
+      await serialRef.current.sendCommand('cancel');
+    } catch {
+      // ignore if not connected
     }
-  }
+    // Always cancel client-side too — if the ESP32 response arrives later
+    // it will just appear in the log without affecting any pending command.
+    cancelRef.current?.();
+  };
 
-  const handleWrite = () => {
-    if (!imagePath.trim()) return
-    const wp = mediaType === "F" ? (writeProtect ? "1" : "0") : "0"
-    const data = `${mediaType}:${wp}:${imagePath.trim()}`
-    sendCommand(`write ${data}`)
-  }
+  const isOkOrErr = (line: string) =>
+    (line.startsWith('OK') && !line.startsWith('OK waiting')) ||
+    line.startsWith('ERR');
+
+  const handleWrite = async () => {
+    if (!imagePath.trim()) return;
+    const wp = mediaType === 'F' ? (writeProtect ? '1' : '0') : '0';
+    const data = `${mediaType}:${wp}:${imagePath.trim()}`;
+    try {
+      const result = await sendCommandAndWait(
+        `write ${data}`,
+        (line) => line.startsWith('OK written') || line.startsWith('ERR'),
+      );
+      if (result.startsWith('OK written')) {
+        await sendCommandAndWait('read', isOkOrErr);
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message !== 'cancelled')
+        addLog(`Error: ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRead = async () => {
+    try {
+      await sendCommandAndWait('read', isOkOrErr);
+    } catch (err) {
+      if (err instanceof Error && err.message !== 'cancelled')
+        addLog(`Error: ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleErase = async () => {
+    try {
+      const result = await sendCommandAndWait(
+        'erase',
+        (line) => line.startsWith('OK erased') || line.startsWith('ERR'),
+      );
+      if (result.startsWith('OK erased')) {
+        await sendCommandAndWait('read', isOkOrErr);
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message !== 'cancelled')
+        addLog(`Error: ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background text-foreground p-6">
@@ -77,7 +171,7 @@ function App() {
           <h1 className="text-2xl font-bold">pi486 NFC Writer</h1>
           <Button
             onClick={handleConnect}
-            variant={connected ? "destructive" : "default"}
+            variant={connected ? 'destructive' : 'default'}
           >
             {connected ? (
               <>
@@ -95,8 +189,10 @@ function App() {
 
         {/* Connection status */}
         <div className="flex items-center gap-2 text-sm">
-          <CircleDot className={`h-4 w-4 ${connected ? "text-green-500" : "text-muted-foreground"}`} />
-          <span>{connected ? "Connected" : "Not connected"}</span>
+          <CircleDot
+            className={`h-4 w-4 ${connected ? 'text-green-500' : 'text-muted-foreground'}`}
+          />
+          <span>{connected ? 'Connected' : 'Not connected'}</span>
         </div>
 
         {/* Write tag card */}
@@ -110,7 +206,7 @@ function App() {
               <Select
                 id="media-type"
                 value={mediaType}
-                onChange={(e) => setMediaType(e.target.value as "F" | "C")}
+                onChange={(e) => setMediaType(e.target.value as 'F' | 'C')}
                 disabled={!connected || busy}
               >
                 <option value="F">Floppy Disk</option>
@@ -118,7 +214,7 @@ function App() {
               </Select>
             </div>
 
-            {mediaType === "F" && (
+            {mediaType === 'F' && (
               <div className="flex items-center gap-2">
                 <input
                   type="checkbox"
@@ -151,7 +247,7 @@ function App() {
               disabled={!connected || busy || !imagePath.trim()}
               className="w-full"
             >
-              {mediaType === "F" ? (
+              {mediaType === 'F' ? (
                 <HardDrive className="h-4 w-4" />
               ) : (
                 <Disc className="h-4 w-4" />
@@ -161,11 +257,11 @@ function App() {
           </CardContent>
         </Card>
 
-        {/* Read / Erase actions */}
-        <div className="grid grid-cols-2 gap-4">
+        {/* Read / Erase / Cancel actions */}
+        <div className="grid grid-cols-3 gap-4">
           <Button
             variant="outline"
-            onClick={() => sendCommand("read")}
+            onClick={handleRead}
             disabled={!connected || busy}
           >
             <BookOpen className="h-4 w-4" />
@@ -173,11 +269,19 @@ function App() {
           </Button>
           <Button
             variant="destructive"
-            onClick={() => sendCommand("erase")}
+            onClick={handleErase}
             disabled={!connected || busy}
           >
             <Trash2 className="h-4 w-4" />
             Erase Tag
+          </Button>
+          <Button
+            variant="outline"
+            onClick={handleCancel}
+            disabled={!connected || !busy}
+          >
+            <XCircle className="h-4 w-4" />
+            Cancel
           </Button>
         </div>
 
@@ -186,11 +290,7 @@ function App() {
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
               Serial Log
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setLog([])}
-              >
+              <Button variant="ghost" size="sm" onClick={() => setLog([])}>
                 Clear
               </Button>
             </CardTitle>
@@ -201,7 +301,16 @@ function App() {
                 <span className="text-muted-foreground">No messages yet.</span>
               )}
               {log.map((entry, i) => (
-                <div key={i} className={entry.startsWith("←") ? "text-green-400" : entry.startsWith("Error") ? "text-red-400" : "text-foreground"}>
+                <div
+                  key={i}
+                  className={
+                    entry.startsWith('←')
+                      ? 'text-green-400'
+                      : entry.startsWith('Error')
+                        ? 'text-red-400'
+                        : 'text-foreground'
+                  }
+                >
                   {entry}
                 </div>
               ))}
@@ -211,7 +320,7 @@ function App() {
         </Card>
       </div>
     </div>
-  )
+  );
 }
 
-export default App
+export default App;

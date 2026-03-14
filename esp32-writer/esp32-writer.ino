@@ -9,6 +9,7 @@
  *   → write <data>    Write tag data (e.g. "write F:0:Win95Boot.img")
  *   → read            Read current tag contents
  *   → erase           Erase tag (zero user pages)
+ *   → cancel          Cancel current operation (while waiting for tag)
  *   ← OK <data>       Success response
  *   ← ERR <message>   Error response
  */
@@ -22,27 +23,68 @@
 
 // NTAG215 layout
 #define NTAG_USER_PAGE_START 4
-#define NTAG_USER_PAGE_END   129
-#define NTAG_MAX_USER_BYTES  504
-#define NTAG_PAGE_SIZE       4
+#define NTAG_USER_PAGE_END 129
+#define NTAG_MAX_USER_BYTES 504
+#define NTAG_PAGE_SIZE 4
 
 // Timeout for waiting for a tag (ms)
-#define TAG_WAIT_TIMEOUT_MS  10000
+#define TAG_WAIT_TIMEOUT_MS 10000
 
 Adafruit_PN532 nfc(PN532_SDA, PN532_SCL);
 
 char cmdBuf[600];
-int  cmdPos = 0;
+int cmdPos = 0;
+volatile bool cancelRequested = false;
+
+// Separate buffer for reading cancel commands during waitForTag,
+// so we never corrupt cmdBuf (which handleWrite's data pointer references).
+char cancelBuf[10];
+int cancelBufPos = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Check if a cancel command has arrived on serial.
+/// Uses a dedicated buffer so we never corrupt cmdBuf.
+void checkForCancel()
+{
+    while (Serial.available())
+    {
+        char c = Serial.read();
+        if (c == '\n' || c == '\r')
+        {
+            if (cancelBufPos > 0)
+            {
+                cancelBuf[cancelBufPos] = '\0';
+                if (strcmp(cancelBuf, "cancel") == 0)
+                {
+                    cancelRequested = true;
+                }
+                cancelBufPos = 0;
+            }
+        }
+        else if (cancelBufPos < (int)sizeof(cancelBuf) - 1)
+        {
+            cancelBuf[cancelBufPos++] = c;
+        }
+    }
+}
+
 /// Wait for an NTAG215 tag to appear. Returns true if found within timeout.
-bool waitForTag(uint8_t *uid, uint8_t *uidLen, unsigned long timeoutMs) {
+/// Returns false if timed out or cancelled.
+bool waitForTag(uint8_t *uid, uint8_t *uidLen, unsigned long timeoutMs)
+{
     unsigned long start = millis();
-    while (millis() - start < timeoutMs) {
-        if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, uidLen, 200)) {
+    while (millis() - start < timeoutMs)
+    {
+        checkForCancel();
+        if (cancelRequested)
+        {
+            return false;
+        }
+        if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, uidLen, 200))
+        {
             return true;
         }
     }
@@ -50,20 +92,25 @@ bool waitForTag(uint8_t *uid, uint8_t *uidLen, unsigned long timeoutMs) {
 }
 
 /// Write data to NTAG215 user pages. Returns true on success.
-bool writeNtagUserData(const uint8_t *data, int len) {
-    if (len > NTAG_MAX_USER_BYTES) return false;
+bool writeNtagUserData(const uint8_t *data, int len)
+{
+    if (len > NTAG_MAX_USER_BYTES)
+        return false;
 
     // Pad to page boundary
     int totalPages = (len + NTAG_PAGE_SIZE - 1) / NTAG_PAGE_SIZE;
 
-    for (int i = 0; i < totalPages; i++) {
+    for (int i = 0; i < totalPages; i++)
+    {
         uint8_t page[NTAG_PAGE_SIZE] = {0};
         int offset = i * NTAG_PAGE_SIZE;
         int toCopy = min(NTAG_PAGE_SIZE, len - offset);
-        if (toCopy > 0) {
+        if (toCopy > 0)
+        {
             memcpy(page, data + offset, toCopy);
         }
-        if (!nfc.ntag2xx_WritePage(NTAG_USER_PAGE_START + i, page)) {
+        if (!nfc.ntag2xx_WritePage(NTAG_USER_PAGE_START + i, page))
+        {
             return false;
         }
     }
@@ -71,20 +118,25 @@ bool writeNtagUserData(const uint8_t *data, int len) {
 }
 
 /// Read NTAG215 user data. Returns bytes read.
-int readNtagUserData(uint8_t *buf, int maxLen) {
+int readNtagUserData(uint8_t *buf, int maxLen)
+{
     int offset = 0;
-    for (uint8_t page = NTAG_USER_PAGE_START; page <= NTAG_USER_PAGE_END && offset < maxLen; page += 4) {
-        uint8_t data[16];
-        if (!nfc.ntag2xx_ReadPage(page, data)) {
+    for (uint8_t page = NTAG_USER_PAGE_START; page <= NTAG_USER_PAGE_END && offset < maxLen; page++)
+    {
+        uint8_t data[NTAG_PAGE_SIZE];
+        if (!nfc.ntag2xx_ReadPage(page, data))
+        {
             break;
         }
-        int toCopy = min(16, maxLen - offset);
+        int toCopy = min(NTAG_PAGE_SIZE, maxLen - offset);
         memcpy(buf + offset, data, toCopy);
         offset += toCopy;
 
         // Stop at null terminator
-        for (int i = 0; i < toCopy; i++) {
-            if (data[i] == 0) {
+        for (int i = 0; i < toCopy; i++)
+        {
+            if (data[i] == 0)
+            {
                 return offset;
             }
         }
@@ -92,72 +144,86 @@ int readNtagUserData(uint8_t *buf, int maxLen) {
     return offset;
 }
 
-/// Zero all user pages on the tag.
-bool eraseNtagUserData() {
+/// Erase tag by zeroing the first user page (reader stops at null terminator).
+bool eraseNtagUserData()
+{
     uint8_t zeros[NTAG_PAGE_SIZE] = {0};
-    for (uint8_t page = NTAG_USER_PAGE_START; page <= NTAG_USER_PAGE_END; page++) {
-        if (!nfc.ntag2xx_WritePage(page, zeros)) {
-            return false;
-        }
-    }
-    return true;
+    return nfc.ntag2xx_WritePage(NTAG_USER_PAGE_START, zeros);
 }
 
 // ---------------------------------------------------------------------------
 // Command handlers
 // ---------------------------------------------------------------------------
 
-void handleWrite(const char *data) {
+void handleWrite(const char *data)
+{
     int len = strlen(data);
-    if (len == 0) {
+    if (len == 0)
+    {
         Serial.println("ERR empty data");
         return;
     }
-    if (len > NTAG_MAX_USER_BYTES) {
+    if (len > NTAG_MAX_USER_BYTES)
+    {
         Serial.println("ERR data too long (max 504 bytes)");
         return;
     }
 
     // Validate format: <type>:<wp>:<path>
-    if (len < 5 || data[1] != ':' || data[3] != ':') {
+    if (len < 5 || data[1] != ':' || data[3] != ':')
+    {
         Serial.println("ERR invalid format, expected <type>:<wp>:<path>");
         return;
     }
-    if (data[0] != 'F' && data[0] != 'C') {
+    if (data[0] != 'F' && data[0] != 'C')
+    {
         Serial.println("ERR type must be F or C");
         return;
     }
-    if (data[2] != '0' && data[2] != '1') {
+    if (data[2] != '0' && data[2] != '1')
+    {
         Serial.println("ERR write-protect must be 0 or 1");
         return;
     }
 
+    cancelRequested = false;
+    cancelBufPos = 0;
     Serial.println("OK waiting for tag...");
 
     uint8_t uid[7];
     uint8_t uidLen;
-    if (!waitForTag(uid, &uidLen, TAG_WAIT_TIMEOUT_MS)) {
-        Serial.println("ERR timeout waiting for tag");
+    if (!waitForTag(uid, &uidLen, TAG_WAIT_TIMEOUT_MS))
+    {
+        Serial.println(cancelRequested ? "ERR cancelled" : "ERR timeout waiting for tag");
+        cancelRequested = false;
         return;
     }
 
     // Write the data (including null terminator)
-    if (writeNtagUserData((const uint8_t *)data, len + 1)) {
+    if (writeNtagUserData((const uint8_t *)data, len + 1))
+    {
         Serial.print("OK written ");
         Serial.print(len);
         Serial.println(" bytes");
-    } else {
+    }
+    else
+    {
         Serial.println("ERR write failed");
     }
 }
 
-void handleRead() {
+void handleRead()
+{
+    cancelRequested = false;
+    cancelBufPos = 0;
     Serial.println("OK waiting for tag...");
 
     uint8_t uid[7];
     uint8_t uidLen;
-    if (!waitForTag(uid, &uidLen, TAG_WAIT_TIMEOUT_MS)) {
-        Serial.println("ERR timeout waiting for tag");
+    if (!waitForTag(uid, &uidLen, TAG_WAIT_TIMEOUT_MS))
+    {
+        Serial.println(cancelRequested ? "ERR cancelled" : "ERR timeout waiting for tag");
+        cancelRequested = false;
         return;
     }
 
@@ -165,40 +231,59 @@ void handleRead() {
     memset(buf, 0, sizeof(buf));
     int bytesRead = readNtagUserData(buf, NTAG_MAX_USER_BYTES);
 
-    if (bytesRead > 0) {
+    if (bytesRead > 0)
+    {
         buf[bytesRead] = '\0';
         Serial.print("OK ");
         Serial.println((const char *)buf);
-    } else {
+    }
+    else
+    {
         Serial.println("ERR read failed or tag empty");
     }
 }
 
-void handleErase() {
+void handleErase()
+{
+    cancelRequested = false;
+    cancelBufPos = 0;
     Serial.println("OK waiting for tag...");
 
     uint8_t uid[7];
     uint8_t uidLen;
-    if (!waitForTag(uid, &uidLen, TAG_WAIT_TIMEOUT_MS)) {
-        Serial.println("ERR timeout waiting for tag");
+    if (!waitForTag(uid, &uidLen, TAG_WAIT_TIMEOUT_MS))
+    {
+        Serial.println(cancelRequested ? "ERR cancelled" : "ERR timeout waiting for tag");
+        cancelRequested = false;
         return;
     }
 
-    if (eraseNtagUserData()) {
+    if (eraseNtagUserData())
+    {
         Serial.println("OK erased");
-    } else {
+    }
+    else
+    {
         Serial.println("ERR erase failed");
     }
 }
 
-void processCommand(const char *line) {
-    if (strncmp(line, "write ", 6) == 0) {
+void processCommand(const char *line)
+{
+    if (strncmp(line, "write ", 6) == 0)
+    {
         handleWrite(line + 6);
-    } else if (strcmp(line, "read") == 0) {
+    }
+    else if (strcmp(line, "read") == 0)
+    {
         handleRead();
-    } else if (strcmp(line, "erase") == 0) {
+    }
+    else if (strcmp(line, "erase") == 0)
+    {
         handleErase();
-    } else {
+    }
+    else
+    {
         Serial.print("ERR unknown command: ");
         Serial.println(line);
     }
@@ -208,9 +293,11 @@ void processCommand(const char *line) {
 // Arduino setup / loop
 // ---------------------------------------------------------------------------
 
-void setup() {
+void setup()
+{
     Serial.begin(115200);
-    while (!Serial) delay(10); // Wait for USB serial
+    while (!Serial)
+        delay(10); // Wait for USB serial
 
     Serial.println("pi486 NFC writer ready");
 
@@ -218,25 +305,34 @@ void setup() {
     nfc.begin();
 
     uint32_t versiondata = nfc.getFirmwareVersion();
-    if (!versiondata) {
+    if (!versiondata)
+    {
         Serial.println("ERR PN532 not found");
-    } else {
+    }
+    else
+    {
         Serial.print("OK PN532 firmware v");
         Serial.println((versiondata >> 8) & 0xFF, DEC);
         nfc.SAMConfig();
     }
 }
 
-void loop() {
-    while (Serial.available()) {
+void loop()
+{
+    while (Serial.available())
+    {
         char c = Serial.read();
-        if (c == '\n' || c == '\r') {
-            if (cmdPos > 0) {
+        if (c == '\n' || c == '\r')
+        {
+            if (cmdPos > 0)
+            {
                 cmdBuf[cmdPos] = '\0';
-                processCommand(cmdBuf);
                 cmdPos = 0;
+                processCommand(cmdBuf);
             }
-        } else if (cmdPos < (int)sizeof(cmdBuf) - 1) {
+        }
+        else if (cmdPos < (int)sizeof(cmdBuf) - 1)
+        {
             cmdBuf[cmdPos++] = c;
         }
     }
