@@ -44,7 +44,9 @@
 
 // NTAG215 memory layout: pages 4-129 are user data (504 bytes)
 #define NTAG_USER_PAGE_START 4
+#define NTAG_USER_PAGE_END 129
 #define NTAG_MAX_USER_BYTES 504
+#define NTAG_PAGE_SIZE 4
 
 // ---------------------------------------------------------------------------
 // Globals
@@ -123,19 +125,18 @@ void processSerialLine(const char *line)
 int readNtagUserData(uint8_t *buf, int maxLen)
 {
     int offset = 0;
-    // Each read returns 4 pages (16 bytes)
-    for (uint8_t page = NTAG_USER_PAGE_START; page < 130 && offset < maxLen; page += 4)
+    for (uint8_t page = NTAG_USER_PAGE_START; page <= NTAG_USER_PAGE_END && offset < maxLen; page++)
     {
-        uint8_t data[16];
+        uint8_t data[NTAG_PAGE_SIZE];
         if (!nfc.ntag2xx_ReadPage(page, data))
         {
             break;
         }
-        int toCopy = min(16, maxLen - offset);
+        int toCopy = min(NTAG_PAGE_SIZE, maxLen - offset);
         memcpy(buf + offset, data, toCopy);
         offset += toCopy;
 
-        // Stop early if we hit a null terminator
+        // Stop at null terminator
         for (int i = 0; i < toCopy; i++)
         {
             if (data[i] == 0)
