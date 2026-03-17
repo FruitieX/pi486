@@ -44,32 +44,42 @@ pub enum SerialCommand {
 
 /// Parse a line received from serial into a command, if recognized.
 /// Accepts: fddload 0 <path> <wp>, cdload 0 <path>, fddeject 0, cdeject 0
+/// Filenames may contain spaces, so we avoid naive whitespace splitting.
 pub fn parse_serial_command(line: &str) -> Option<SerialCommand> {
-    let parts: Vec<&str> = line.trim().splitn(4, ' ').collect();
-    if parts.is_empty() {
-        return None;
+    let line = line.trim();
+
+    if let Some(rest) = line.strip_prefix("fddload 0 ") {
+        // rest = "<path> <wp>" — wp is the last token if it parses as u8
+        if let Some((path, wp_str)) = rest.rsplit_once(' ') {
+            if let Ok(wp) = wp_str.parse::<u8>() {
+                return Some(SerialCommand::FddLoad {
+                    path: path.to_string(),
+                    write_protect: wp,
+                });
+            }
+        }
+        // No valid wp suffix — treat entire rest as path, default wp=0
+        return Some(SerialCommand::FddLoad {
+            path: rest.to_string(),
+            write_protect: 0,
+        });
     }
 
-    match parts[0] {
-        "fddload" if parts.len() >= 4 => {
-            let write_protect = parts[3].parse::<u8>().ok()?;
-            Some(SerialCommand::FddLoad {
-                path: parts[2].to_string(),
-                write_protect,
-            })
-        }
-        // fddload with only path (no wp), default to 0
-        "fddload" if parts.len() == 3 => Some(SerialCommand::FddLoad {
-            path: parts[2].to_string(),
-            write_protect: 0,
-        }),
-        "cdload" if parts.len() >= 3 => Some(SerialCommand::CdLoad {
-            path: parts[2].to_string(),
-        }),
-        "fddeject" => Some(SerialCommand::FddEject),
-        "cdeject" => Some(SerialCommand::CdEject),
-        _ => None,
+    if let Some(rest) = line.strip_prefix("cdload 0 ") {
+        return Some(SerialCommand::CdLoad {
+            path: rest.to_string(),
+        });
     }
+
+    if line.starts_with("fddeject") {
+        return Some(SerialCommand::FddEject);
+    }
+
+    if line.starts_with("cdeject") {
+        return Some(SerialCommand::CdEject);
+    }
+
+    None
 }
 
 /// Mount prefixes for floppy and CD-ROM paths.
@@ -251,6 +261,29 @@ mod tests {
         assert_eq!(
             prepend_prefix("img.iso", Some("/mnt/roms")),
             "/mnt/roms/img.iso"
+        );
+    }
+
+    #[test]
+    fn test_parse_serial_cdload_with_spaces() {
+        let cmd = parse_serial_command("cdload 0 My image.iso").unwrap();
+        assert_eq!(
+            cmd,
+            SerialCommand::CdLoad {
+                path: "My image.iso".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_serial_fddload_with_spaces() {
+        let cmd = parse_serial_command("fddload 0 My floppy image.img 1").unwrap();
+        assert_eq!(
+            cmd,
+            SerialCommand::FddLoad {
+                path: "My floppy image.img".to_string(),
+                write_protect: 1,
+            }
         );
     }
 

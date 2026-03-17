@@ -24,7 +24,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const cancelRef = useRef<(() => void) | null>(null);
   // Write form state
-  const [mediaType, setMediaType] = useState<'F' | 'C'>('F');
+  const [mediaType, setMediaType] = useState<'F' | 'C'>('C');
   const [writeProtect, setWriteProtect] = useState(false);
   const [imagePath, setImagePath] = useState('');
 
@@ -209,8 +209,8 @@ function App() {
                 onChange={(e) => setMediaType(e.target.value as 'F' | 'C')}
                 disabled={!connected || busy}
               >
-                <option value="F">Floppy Disk</option>
                 <option value="C">CD-ROM</option>
+                <option value="F">Floppy Disk</option>
               </Select>
             </div>
 
