@@ -104,6 +104,9 @@ void handleLedEvent(const char *device, const char *state)
 // ---------------------------------------------------------------------------
 void processSerialLine(const char *line)
 {
+    Serial.print("[PI] ");
+    Serial.println(line);
+
     // "!led <device> <id> <state>"
     if (strncmp(line, "!led ", 5) == 0)
     {
@@ -124,12 +127,15 @@ void processSerialLine(const char *line)
 /// Read NTAG215 user pages into buf. Returns number of bytes read, or 0 on failure.
 int readNtagUserData(uint8_t *buf, int maxLen)
 {
+    Serial.println("[NFC] Reading tag user data...");
     int offset = 0;
     for (uint8_t page = NTAG_USER_PAGE_START; page <= NTAG_USER_PAGE_END && offset < maxLen; page++)
     {
         uint8_t data[NTAG_PAGE_SIZE];
         if (!nfc.ntag2xx_ReadPage(page, data))
         {
+            Serial.print("[NFC] Read failed at page ");
+            Serial.println(page);
             break;
         }
         int toCopy = min(NTAG_PAGE_SIZE, maxLen - offset);
@@ -172,8 +178,13 @@ void handleTagData(const uint8_t *data, int len)
 
     // Parse: <type>:<wp>:<path>
     // type = 'F' or 'C', wp = '0' or '1', path = rest
+    Serial.print("[NFC] Tag data: \"");
+    Serial.print(tagStr);
+    Serial.println("\"");
+
     if (strlen(tagStr) < 5 || tagStr[1] != ':' || tagStr[3] != ':')
     {
+        Serial.println("[NFC] Invalid format, ignoring");
         return; // invalid format
     }
 
@@ -182,16 +193,29 @@ void handleTagData(const uint8_t *data, int len)
     const char *path = &tagStr[4];
 
     if (type != 'F' && type != 'C')
+    {
+        Serial.println("[NFC] Invalid type, ignoring");
         return;
+    }
     if (wp != '0' && wp != '1')
+    {
+        Serial.println("[NFC] Invalid write-protect, ignoring");
         return;
+    }
     if (strlen(path) == 0)
+    {
+        Serial.println("[NFC] Empty path, ignoring");
         return;
+    }
 
     lastTagType = type;
 
     if (type == 'F')
     {
+        Serial.print("[NFC] Sending: fddload 0 ");
+        Serial.print(path);
+        Serial.print(" ");
+        Serial.println(wp);
         Serial2.print("fddload 0 ");
         Serial2.print(path);
         Serial2.print(" ");
@@ -199,6 +223,8 @@ void handleTagData(const uint8_t *data, int len)
     }
     else
     {
+        Serial.print("[NFC] Sending: cdload 0 ");
+        Serial.println(path);
         Serial2.print("cdload 0 ");
         Serial2.println(path);
     }
@@ -219,15 +245,26 @@ void pollNfc()
     uint8_t uid[7];
     uint8_t uidLen = 0;
 
+    Serial.println("[NFC] Polling...");
     bool found = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100);
 
     if (found)
     {
         missedPolls = 0;
 
+        Serial.print("[NFC] Tag found, UID: ");
+        for (uint8_t i = 0; i < uidLen; i++)
+        {
+            if (uid[i] < 0x10)
+                Serial.print("0");
+            Serial.print(uid[i], HEX);
+        }
+        Serial.println();
+
         // Same tag as already mounted → no-op
         if (tagMounted && !tagEjected && sameUid(uid, uidLen, lastTagUid, lastTagUidLen))
         {
+            Serial.println("[NFC] Same tag already mounted, skipping");
             return;
         }
 
@@ -237,9 +274,16 @@ void pollNfc()
 
         uint8_t tagData[NTAG_MAX_USER_BYTES];
         int bytesRead = readNtagUserData(tagData, sizeof(tagData));
+        Serial.print("[NFC] Read ");
+        Serial.print(bytesRead);
+        Serial.println(" bytes from tag");
         if (bytesRead > 0)
         {
             handleTagData(tagData, bytesRead);
+        }
+        else
+        {
+            Serial.println("[NFC] No data on tag");
         }
     }
     else
@@ -248,15 +292,19 @@ void pollNfc()
         if (tagMounted && !tagEjected)
         {
             missedPolls++;
+            Serial.print("[NFC] No tag, missed polls: ");
+            Serial.println(missedPolls);
             if (missedPolls >= EJECT_MISS_COUNT)
             {
                 // Send eject
                 if (lastTagType == 'F')
                 {
+                    Serial.println("[NFC] Sending: fddeject 0");
                     Serial2.println("fddeject 0");
                 }
                 else if (lastTagType == 'C')
                 {
+                    Serial.println("[NFC] Sending: cdeject 0");
                     Serial2.println("cdeject 0");
                 }
                 tagEjected = true;
