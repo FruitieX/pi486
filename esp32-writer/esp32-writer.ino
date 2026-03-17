@@ -117,7 +117,9 @@ bool writeNtagUserData(const uint8_t *data, int len)
     return true;
 }
 
-/// Read NTAG215 user data. Returns bytes read.
+/// Read NTAG215 user data.
+/// Returns number of bytes read on success (null terminator found),
+/// or -1 if the read was incomplete (tag removed before null terminator).
 int readNtagUserData(uint8_t *buf, int maxLen)
 {
     int offset = 0;
@@ -126,7 +128,7 @@ int readNtagUserData(uint8_t *buf, int maxLen)
         uint8_t data[NTAG_PAGE_SIZE];
         if (!nfc.ntag2xx_ReadPage(page, data))
         {
-            break;
+            return -1; // incomplete read — tag likely removed
         }
         int toCopy = min(NTAG_PAGE_SIZE, maxLen - offset);
         memcpy(buf + offset, data, toCopy);
@@ -237,9 +239,13 @@ void handleRead()
         Serial.print("OK ");
         Serial.println((const char *)buf);
     }
+    else if (bytesRead == -1)
+    {
+        Serial.println("ERR read incomplete (tag removed too early)");
+    }
     else
     {
-        Serial.println("ERR read failed or tag empty");
+        Serial.println("ERR tag empty");
     }
 }
 

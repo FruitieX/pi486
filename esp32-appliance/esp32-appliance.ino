@@ -124,7 +124,9 @@ void processSerialLine(const char *line)
 // NFC tag reading
 // ---------------------------------------------------------------------------
 
-/// Read NTAG215 user pages into buf. Returns number of bytes read, or 0 on failure.
+/// Read NTAG215 user pages into buf.
+/// Returns number of bytes read on success (null terminator found),
+/// or -1 if the read was incomplete (tag removed before null terminator).
 int readNtagUserData(uint8_t *buf, int maxLen)
 {
     Serial.println("[NFC] Reading tag user data...");
@@ -136,7 +138,7 @@ int readNtagUserData(uint8_t *buf, int maxLen)
         {
             Serial.print("[NFC] Read failed at page ");
             Serial.println(page);
-            break;
+            return -1; // incomplete read — tag likely removed
         }
         int toCopy = min(NTAG_PAGE_SIZE, maxLen - offset);
         memcpy(buf + offset, data, toCopy);
@@ -273,13 +275,27 @@ void pollNfc()
         lastTagUidLen = uidLen;
 
         uint8_t tagData[NTAG_MAX_USER_BYTES];
-        int bytesRead = readNtagUserData(tagData, sizeof(tagData));
+        int bytesRead = -1;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            bytesRead = readNtagUserData(tagData, sizeof(tagData));
+            if (bytesRead >= 0)
+                break;
+            Serial.print("[NFC] Incomplete read (attempt ");
+            Serial.print(attempt + 1);
+            Serial.println("/3), retrying...");
+        }
+
         Serial.print("[NFC] Read ");
         Serial.print(bytesRead);
         Serial.println(" bytes from tag");
         if (bytesRead > 0)
         {
             handleTagData(tagData, bytesRead);
+        }
+        else if (bytesRead == -1)
+        {
+            Serial.println("[NFC] Incomplete read, ignoring tag");
         }
         else
         {
