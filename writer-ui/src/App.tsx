@@ -13,11 +13,13 @@ import {
   Trash2,
   CircleDot,
   XCircle,
+  FolderOpen,
 } from 'lucide-react';
 
 function App() {
   const serialRef = useRef(new SerialConnection());
   const logEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [connected, setConnected] = useState(false);
   const [log, setLog] = useState<string[]>([]);
@@ -230,13 +232,34 @@ function App() {
 
             <div className="space-y-2">
               <Label htmlFor="image-path">Image Path</Label>
-              <Input
-                id="image-path"
-                placeholder="e.g. Win95Boot.img"
-                value={imagePath}
-                onChange={(e) => setImagePath(e.target.value)}
-                disabled={!connected || busy}
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="image-path"
+                  placeholder="e.g. Win95Boot.img"
+                  value={imagePath}
+                  onChange={(e) => setImagePath(e.target.value)}
+                  disabled={!connected || busy}
+                />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) setImagePath(file.name);
+                    e.target.value = '';
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!connected || busy}
+                >
+                  <FolderOpen className="h-4 w-4" />
+                </Button>
+              </div>
               <p className="text-xs text-muted-foreground">
                 Relative path — the mount prefix is added by pi486 on the Pi.
               </p>
