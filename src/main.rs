@@ -37,6 +37,11 @@ pub struct Args {
     /// Path prefix prepended to CD-ROM mount paths from serial (e.g. /mnt/cdrom/)
     #[arg(long)]
     cd_prefix: Option<String>,
+
+    /// Combine FDD and CD-ROM activity LEDs: activity on either device is sent
+    /// as both FDD and CD LED events to the ESP32 appliance.
+    #[arg(long, default_value_t = false)]
+    combine_disk_leds: bool,
 }
 
 #[tokio::main]
@@ -61,6 +66,7 @@ async fn main() -> Result<()> {
         screencrc = ?args.screencrc,
         fdd_prefix = ?args.fdd_prefix,
         cd_prefix = ?args.cd_prefix,
+        combine_disk_leds = args.combine_disk_leds,
         "starting pi486"
     );
 

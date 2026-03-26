@@ -124,6 +124,38 @@ pub fn is_event_line(line: &str) -> bool {
     line.starts_with('!')
 }
 
+/// Rewrite an event line for combined FDD/CD-ROM LED mode.
+///
+/// When `combine` is true and the line is an `!led fdd` or `!led cdrom` event,
+/// returns two lines with both device names. Otherwise returns just the original.
+pub fn rewrite_combined_led_events(line: &str, combine: bool) -> Vec<String> {
+    if !combine {
+        return vec![line.to_string()];
+    }
+    if let Some(rest) = line.strip_prefix("!led fdd ") {
+        vec![line.to_string(), format!("!led cdrom {rest}")]
+    } else if let Some(rest) = line.strip_prefix("!led cdrom ") {
+        vec![format!("!led fdd {rest}"), line.to_string()]
+    } else {
+        vec![line.to_string()]
+    }
+}
+
+const LED_DEVICES: &[&str] = &["power", "hdd", "fdd", "cdrom", "net"];
+
+/// Lines that turn all LEDs off (power, hdd, fdd, cdrom, net).
+pub fn all_leds_off_lines() -> Vec<String> {
+    LED_DEVICES
+        .iter()
+        .map(|dev| format!("!led {dev} 0 off"))
+        .collect()
+}
+
+/// Line that turns the power LED on.
+pub fn power_led_on_line() -> &'static str {
+    "!led power 0 read"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,5 +325,51 @@ mod tests {
         assert!(is_event_line("!media cdrom 0 ejected"));
         assert!(!is_event_line("OK loaded"));
         assert!(!is_event_line("ERR something"));
+    }
+
+    #[test]
+    fn test_rewrite_combined_disabled() {
+        let lines = rewrite_combined_led_events("!led fdd 0 write", false);
+        assert_eq!(lines, vec!["!led fdd 0 write"]);
+    }
+
+    #[test]
+    fn test_rewrite_combined_fdd() {
+        let lines = rewrite_combined_led_events("!led fdd 0 write", true);
+        assert_eq!(lines, vec!["!led fdd 0 write", "!led cdrom 0 write"]);
+    }
+
+    #[test]
+    fn test_rewrite_combined_cdrom() {
+        let lines = rewrite_combined_led_events("!led cdrom 0 read", true);
+        assert_eq!(lines, vec!["!led fdd 0 read", "!led cdrom 0 read"]);
+    }
+
+    #[test]
+    fn test_rewrite_combined_other_led() {
+        let lines = rewrite_combined_led_events("!led hdd 0 write", true);
+        assert_eq!(lines, vec!["!led hdd 0 write"]);
+    }
+
+    #[test]
+    fn test_rewrite_combined_non_led_event() {
+        let lines = rewrite_combined_led_events("!media cdrom 0 ejected", true);
+        assert_eq!(lines, vec!["!media cdrom 0 ejected"]);
+    }
+
+    #[test]
+    fn test_all_leds_off_lines() {
+        let lines = all_leds_off_lines();
+        assert_eq!(lines.len(), 5);
+        assert!(lines.contains(&"!led power 0 off".to_string()));
+        assert!(lines.contains(&"!led hdd 0 off".to_string()));
+        assert!(lines.contains(&"!led fdd 0 off".to_string()));
+        assert!(lines.contains(&"!led cdrom 0 off".to_string()));
+        assert!(lines.contains(&"!led net 0 off".to_string()));
+    }
+
+    #[test]
+    fn test_power_led_on_line() {
+        assert_eq!(power_led_on_line(), "!led power 0 read");
     }
 }

@@ -68,7 +68,7 @@ uint8_t linePos = 0;
 // Timing
 unsigned long lastNfcPoll = 0;
 
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------
 // LED helpers
 // ---------------------------------------------------------------------------
 void setAllLeds(uint8_t state)
@@ -92,6 +92,8 @@ void handleLedEvent(const char *device, const char *state)
         pin = LED_CD;
     else if (strcmp(device, "net") == 0)
         pin = LED_NET;
+    else if (strcmp(device, "power") == 0)
+        pin = LED_POWER;
 
     if (pin >= 0)
     {
@@ -343,8 +345,8 @@ void setup()
     pinMode(LED_CD, OUTPUT);
     pinMode(LED_NET, OUTPUT);
 
-    // Power LED always on
-    digitalWrite(LED_POWER, HIGH);
+    // Power LED starts off — pi486 will turn it on when socket connects
+    digitalWrite(LED_POWER, LOW);
     setAllLeds(LOW);
 
     // UART to Raspberry Pi (Serial2 on WROOM-32, explicit pin assignment)
