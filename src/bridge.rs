@@ -34,6 +34,8 @@ pub async fn run(args: Args) -> Result<()> {
         cd: args.cd_prefix.clone(),
     };
 
+    let mut serial = SerialPort::open(args.serial.as_deref(), args.baud)?;
+
     loop {
         if cancel.is_cancelled() {
             info!("shutdown requested");
@@ -44,8 +46,6 @@ pub async fn run(args: Args) -> Result<()> {
         let Some(conn) = socket::connect_loop(&args.socket, cancel.clone()).await else {
             break;
         };
-
-        let mut serial = SerialPort::open(args.serial.as_deref(), args.baud)?;
 
         if let Err(e) = run_bridge(
             conn,
