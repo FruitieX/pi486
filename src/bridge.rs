@@ -36,6 +36,10 @@ pub async fn run(args: Args) -> Result<()> {
 
     let mut serial = SerialPort::open(args.serial.as_deref(), args.baud)?;
 
+    // Flush any garbage the ESP32 may have accumulated in its UART line buffer
+    // during Pi boot (before the UART was properly configured by the OS).
+    serial.write_line("").await?;
+
     loop {
         if cancel.is_cancelled() {
             info!("shutdown requested");
