@@ -97,6 +97,7 @@ pub fn build_socket_command(cmd: &SerialCommand, prefixes: &MountPrefixes) -> St
             write_protect,
         } => {
             let full_path = prepend_prefix(path, prefixes.fdd.as_deref());
+            let full_path = quote_media_path_if_needed(&full_path);
             format!("fddload 0 {full_path} {write_protect}")
         }
         SerialCommand::CdLoad { path } => {
@@ -116,6 +117,20 @@ fn prepend_prefix(path: &str, prefix: Option<&str>) -> String {
             format!("{p}/{path}")
         }
         None => path.to_string(),
+    }
+}
+
+fn quote_media_path_if_needed(path: &str) -> String {
+    if !path.chars().any(char::is_whitespace) {
+        return path.to_string();
+    }
+
+    if !path.contains('"') {
+        format!("\"{path}\"")
+    } else if !path.contains('\'') {
+        format!("'{path}'")
+    } else {
+        path.to_string()
     }
 }
 
