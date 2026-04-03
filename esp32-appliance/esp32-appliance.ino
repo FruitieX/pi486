@@ -57,6 +57,8 @@ Adafruit_PN532 nfc(PN532_SDA, PN532_SCL); // I2C mode (no reset/IRQ)
 uint8_t lastTagUid[7];
 uint8_t lastTagUidLen = 0;
 char lastTagType = 0; // 'F' or 'C'
+char lastTagWp = '0';
+char lastTagPath[NTAG_MAX_USER_BYTES + 1] = {0};
 bool tagMounted = false;
 bool tagEjected = true; // start as "nothing mounted"
 uint8_t missedPolls = 0;
@@ -118,6 +120,35 @@ void processSerialLine(const char *line)
         if (sscanf(line + 5, "%15s %3s %15s", device, id, state) == 3)
         {
             handleLedEvent(device, state);
+        }
+    }
+    // "sync" — re-send current mount state
+    else if (strcmp(line, "sync") == 0)
+    {
+        if (tagMounted && !tagEjected && lastTagPath[0] != '\0')
+        {
+            if (lastTagType == 'F')
+            {
+                Serial.print("[SYNC] Sending: fddload 0 ");
+                Serial.print(lastTagPath);
+                Serial.print(" ");
+                Serial.println(lastTagWp);
+                Serial2.print("fddload 0 ");
+                Serial2.print(lastTagPath);
+                Serial2.print(" ");
+                Serial2.println(lastTagWp);
+            }
+            else if (lastTagType == 'C')
+            {
+                Serial.print("[SYNC] Sending: cdload 0 ");
+                Serial.println(lastTagPath);
+                Serial2.print("cdload 0 ");
+                Serial2.println(lastTagPath);
+            }
+        }
+        else
+        {
+            Serial.println("[SYNC] No disk mounted, nothing to send");
         }
     }
 }
@@ -213,6 +244,9 @@ void handleTagData(const uint8_t *data, int len)
     }
 
     lastTagType = type;
+    lastTagWp = wp;
+    strncpy(lastTagPath, path, sizeof(lastTagPath) - 1);
+    lastTagPath[sizeof(lastTagPath) - 1] = '\0';
 
     if (type == 'F')
     {
@@ -327,6 +361,7 @@ void pollNfc()
                 }
                 tagEjected = true;
                 tagMounted = false;
+                lastTagPath[0] = '\0';
                 missedPolls = 0;
             }
         }

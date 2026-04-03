@@ -83,6 +83,11 @@ async fn run_bridge(
     // Turn on the power LED when the socket session starts.
     serial.write_line(power_led_on_line()).await?;
 
+    // Ask the ESP32 to re-send its current NFC disk state so 86Box picks up
+    // disks that were inserted while the socket was disconnected.
+    info!("sending sync to ESP32");
+    serial.write_line("sync").await?;
+
     let mut crc_interval = interval(Duration::from_secs(1));
     crc_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     // Skip the first immediate tick so we don't poll screencrc right away.
